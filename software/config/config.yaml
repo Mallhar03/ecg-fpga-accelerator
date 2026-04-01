@@ -1,0 +1,33 @@
+# ECG-FPGA Accelerator Configuration
+# Project: Major Project 2024-25
+# Group 21
+
+data:
+  dataset_name: "mitdb"
+  raw_dir: "ecg-fpga-accelerator/software/data/raw"
+  processed_dir: "ecg-fpga-accelerator/software/data/processed"
+  sampling_rate: 360
+  window_size: 256  # Approximately 0.7 seconds around R-peak
+  test_split: 0.2
+
+model:
+  type: "multiscale_cnn"
+  in_channels: 1
+  num_classes: 5  # N, S, V, F, Q (AAMI classes)
+  scales: [3, 5, 7, 9]
+  base_filters: 16
+
+training:
+  batch_size: 64
+  learning_rate: 0.001
+  epochs: 50
+  weight_decay: 0.0001
+  checkpoint_dir: "ecg-fpga-accelerator/software/outputs/checkpoints"
+  log_dir: "ecg-fpga-accelerator/software/outputs/logs"
+  plot_dir: "ecg-fpga-accelerator/software/outputs/plots"
+
+quantization:
+  enabled: true
+  weight_bit_width: 8
+  act_bit_width: 8
+  export_dir: "ecg-fpga-accelerator/software/outputs/mem_files"

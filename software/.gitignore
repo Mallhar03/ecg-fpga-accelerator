@@ -1,0 +1,22 @@
+software/data/
+software/outputs/checkpoints/
+software/outputs/mem_files/
+software/outputs/logs/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+.eggs/
+.ipynb_checkpoints/
+.env
+*.env
+conda-env/
+.vscode/
+.idea/
+# OS
+.DS_Store
+Thumbs.db
