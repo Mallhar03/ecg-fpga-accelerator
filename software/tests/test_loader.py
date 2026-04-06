@@ -93,3 +93,27 @@ def test_load_multiple_records_empty_list_raises():
 def test_load_multiple_records_no_skip_raises_on_missing():
     with pytest.raises(FileNotFoundError):
         load_multiple_records(["nonexistent_xyz"], "/nonexistent/path", skip_missing=False)
+
+# Dataset Tests appended for Phase 1A
+from software.src.data.dataset import ECGDataset
+import torch
+
+# Test: test_ecg_dataset_getitem_shape
+def test_ecg_dataset_getitem_shape():
+    windows = np.random.randn(10, 256).astype(np.float64)
+    labels = np.zeros((10, 5), dtype=np.float32)
+    labels[:, 4] = 1.0
+    dataset = ECGDataset(windows, labels, mean=0.0, std=1.0)
+    assert len(dataset) == 10
+    x, y = dataset[0]
+    assert x.shape == torch.Size([1, 256])
+    assert y.shape == torch.Size([5])
+    assert x.dtype == torch.float32
+    assert y.dtype == torch.float32
+
+# Test: test_ecg_dataset_label_count_mismatch_raises
+def test_ecg_dataset_label_count_mismatch_raises():
+    windows = np.random.randn(10, 256)
+    labels = np.zeros((9, 5))
+    with pytest.raises(ValueError):
+        ECGDataset(windows, labels)
