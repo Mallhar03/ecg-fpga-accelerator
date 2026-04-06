@@ -1,82 +1,203 @@
-import torch
-import torch.nn as nn
-import torch.optim as optim
-from torch.utils.data import DataLoader
-from tqdm import tqdm
 import os
-import matplotlib.pyplot as plt
+import torch
+import numpy as np
+import random
+import logging
+from tqdm import tqdm
+from src.training.metrics import compute_clinical_metrics
 
-class MorphologyWeightedBCELoss(nn.Module):
-    """Custom loss for weighting ECG morphological features."""
-    def __init__(self, pos_weight=None):
-        super(MorphologyWeightedBCELoss, self).__init__()
-        self.bce = nn.CrossEntropyLoss(weight=pos_weight)
+logger = logging.getLogger("ecg_fpga.training.trainer")
 
-    def forward(self, outputs, targets):
-        return self.bce(outputs, targets)
-
-class ECGTrainer:
-    def __init__(self, model, config, train_loader, val_loader, device='cpu'):
-        self.model = model.to(device)
+class Trainer:
+    def __init__(self, config: dict):
+        """
+        Args:
+            config (dict): Full parsed config.yaml as a dict.
+        Sets up: output directories, logging, seeds from config.project.seed
+        """
         self.config = config
-        self.train_loader = train_loader
-        self.val_loader = val_loader
-        self.device = device
+        self.seed = config['project']['seed']
+        self._set_seeds()
         
-        self.optimizer = optim.Adam(
-            model.parameters(), 
-            lr=config['training']['learning_rate'],
-            weight_decay=config['training']['weight_decay']
-        )
-        self.criterion = MorphologyWeightedBCELoss()
+        self.checkpoint_dir = os.path.join(os.getcwd(), "software/outputs/checkpoints")
+        self.log_dir = os.path.join(os.getcwd(), "software/outputs/logs")
         
-        os.makedirs(config['training']['checkpoint_dir'], exist_ok=True)
-        os.makedirs(config['training']['log_dir'], exist_ok=True)
-        os.makedirs(config['training']['plot_dir'], exist_ok=True)
+        os.makedirs(self.checkpoint_dir, exist_ok=True)
+        os.makedirs(self.log_dir, exist_ok=True)
+        
+        self._setup_logging()
 
-    def train_epoch(self):
-        self.model.train()
-        running_loss = 0.0
-        for batch_idx, (data, target) in enumerate(tqdm(self.train_loader)):
-            data, target = data.to(self.device), target.to(self.device)
-            self.optimizer.zero_grad()
-            output = self.model(data)
-            loss = self.criterion(output, target)
+    def _set_seeds(self):
+        torch.manual_seed(self.seed)
+        np.random.seed(self.seed)
+        random.seed(self.seed)
+        if torch.cuda.is_available():
+            torch.cuda.manual_seed_all(self.seed)
+
+    def _setup_logging(self):
+        log_file = os.path.join(self.log_dir, "training.log")
+        
+        # Avoid adding handlers multiple times if __init__ is called again
+        if not logger.handlers:
+            file_handler = logging.FileHandler(log_file)
+            stream_handler = logging.StreamHandler()
+            
+            formatter = logging.Formatter("%(asctime)s | %(name)s | %(levelname)s | %(message)s")
+            file_handler.setFormatter(formatter)
+            stream_handler.setFormatter(formatter)
+            
+            logger.addHandler(file_handler)
+            logger.addHandler(stream_handler)
+            logger.setLevel(logging.DEBUG)
+
+    def train_one_epoch(self, model, loader, optimizer, loss_fn) -> dict:
+        """
+        Run one full training epoch.
+        Returns: dict with keys 'loss' (float, mean batch loss)
+        """
+        model.train()
+        total_loss = 0.0
+        device = next(model.parameters()).device
+        
+        for images, labels in tqdm(loader, desc="Training"):
+            images = images.to(device)
+            labels = labels.to(device)
+            
+            optimizer.zero_grad()
+            logits = model(images)
+            loss = loss_fn(logits, labels)
             loss.backward()
-            self.optimizer.step()
-            running_loss += loss.item()
-        return running_loss / len(self.train_loader)
+            optimizer.step()
+            
+            total_loss += loss.item()
+            
+        return {'loss': total_loss / len(loader)}
 
-    def validate(self):
-        self.model.eval()
-        running_loss = 0.0
-        correct = 0
-        total = 0
-        with torch.no_grad():
-            for data, target in self.val_loader:
-                data, target = data.to(self.device), target.to(self.device)
-                output = self.model(data)
-                loss = self.criterion(output, target)
-                running_loss += loss.item()
-                _, predicted = output.max(1)
-                total += target.size(0)
-                correct += predicted.eq(target).sum().item()
+    def validate(self, model, loader, loss_fn) -> dict:
+        """
+        Run validation pass with no gradient computation.
+        Returns: dict with keys 'loss' (float), 'f1_macro' (float),
+                 'metrics' (full dict from compute_clinical_metrics)
+        """
+        model.eval()
+        total_loss = 0.0
+        all_logits = []
+        all_labels = []
+        device = next(model.parameters()).device
         
-        accuracy = 100. * correct / total
-        return running_loss / len(self.val_loader), accuracy
+        with torch.no_grad():
+            for images, labels in tqdm(loader, desc="Validating"):
+                images = images.to(device)
+                labels = labels.to(device)
+                
+                logits = model(images)
+                loss = loss_fn(logits, labels)
+                
+                total_loss += loss.item()
+                all_logits.append(logits.cpu().numpy())
+                all_labels.append(labels.cpu().numpy())
+                
+        avg_loss = total_loss / len(loader)
+        all_logits = np.concatenate(all_logits, axis=0)
+        all_labels = np.concatenate(all_labels, axis=0)
+        
+        # Apply sigmoid to logits for metrics
+        probs = 1 / (1 + np.exp(-all_logits))
+        metrics = compute_clinical_metrics(all_labels, probs)
+        
+        return {
+            'loss': avg_loss,
+            'f1_macro': metrics['macro_avg']['f1'],
+            'metrics': metrics
+        }
 
-    def train(self):
+    def _get_optimizer(self, model):
+        lr = self.config['training']['learning_rate']
+        opt_name = self.config['training']['optimizer'].lower()
+        wd = self.config['training']['weight_decay']
+        
+        if opt_name == 'adam':
+            return torch.optim.Adam(model.parameters(), lr=lr, weight_decay=wd)
+        elif opt_name == 'sgd':
+            return torch.optim.SGD(model.parameters(), lr=lr, weight_decay=wd)
+        else:
+            raise ValueError(f"Unknown optimizer: {opt_name}")
+
+    def fit(self, model, train_loader, val_loader, loss_fn) -> None:
+        """
+        Full training loop with checkpointing and early stopping.
+        Saves every checkpoint_every_n_epochs to:
+            software/outputs/checkpoints/epoch_{N}.pth
+        Saves best model (by val f1_macro) to:
+            software/outputs/checkpoints/best_model.pth
+        Stops early if val f1_macro does not improve for
+            config.training.early_stopping_patience consecutive epochs.
+        """
+        if not hasattr(self, 'optimizer') or self.optimizer is None:
+            self.optimizer = self._get_optimizer(model)
+            
+        best_f1 = -1.0
+        epochs_no_improve = 0
+        patience = self.config['training']['early_stopping_patience']
         epochs = self.config['training']['epochs']
-        best_acc = 0.0
         
         for epoch in range(1, epochs + 1):
-            train_loss = self.train_epoch()
-            val_loss, val_acc = self.validate()
+            train_results = self.train_one_epoch(model, train_loader, self.optimizer, loss_fn)
+            val_results = self.validate(model, val_loader, loss_fn)
             
-            print(f"Epoch {epoch}/{epochs}: Train Loss: {train_loss:.4f} | Val Loss: {val_loss:.4f} | Val Acc: {val_acc:.2f}%")
+            val_f1 = val_results['f1_macro']
+            logger.info(f"Epoch {epoch}/{epochs} | train_loss: {train_results['loss']:.4f} | val_loss: {val_results['loss']:.4f} | val_f1_macro: {val_f1:.4f}")
             
-            if val_acc > best_acc:
-                best_acc = val_acc
-                torch.save(self.model.state_dict(), os.path.join(self.config['training']['checkpoint_dir'], 'best_model.pth'))
-        
-        print(f"Training complete. Best Accuracy: {best_acc:.2f}%")
+            # Checkpoint every N epochs
+            if epoch % self.config['training']['checkpoint_every_n_epochs'] == 0:
+                cp_path = os.path.join(self.checkpoint_dir, f"epoch_{epoch}.pth")
+                self.save_checkpoint(model, self.optimizer, epoch, val_f1, cp_path)
+                
+            # Best model
+            if val_f1 > best_f1:
+                best_f1 = val_f1
+                best_path = os.path.join(self.checkpoint_dir, "best_model.pth")
+                self.save_checkpoint(model, self.optimizer, epoch, val_f1, best_path)
+                epochs_no_improve = 0
+                logger.info(f"New best model saved with F1: {best_f1:.4f}")
+            else:
+                epochs_no_improve += 1
+                
+            if epochs_no_improve >= patience:
+                logger.info(f"Early stopping at epoch {epoch}")
+                break
+
+    def save_checkpoint(self, model, optimizer, epoch, val_f1, path) -> None:
+        """
+        Save checkpoint dict containing:
+            model_state_dict, optimizer_state_dict, epoch, val_f1, config
+        """
+        checkpoint = {
+            'model_state_dict': model.state_dict(),
+            'optimizer_state_dict': optimizer.state_dict(),
+            'epoch': epoch,
+            'val_f1': val_f1,
+            'config': self.config
+        }
+        torch.save(checkpoint, path)
+
+    def load_checkpoint(self, path, model, optimizer=None):
+        """
+        Load checkpoint from path into model (and optionally optimizer).
+        Returns: epoch number (int), val_f1 (float)
+        Raises: FileNotFoundError if path does not exist.
+        """
+        if not os.path.exists(path):
+            raise FileNotFoundError(f"Checkpoint not found: {path}")
+            
+        checkpoint = torch.load(path, map_location=next(model.parameters()).device)
+        model.load_state_dict(checkpoint['model_state_dict'])
+        if optimizer and 'optimizer_state_dict' in checkpoint:
+            optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+            self.optimizer = optimizer
+        elif 'optimizer_state_dict' in checkpoint:
+            # If no optimizer provided but we have state, we might need model to create one
+            # But for simplicity, we'll just store the state or wait for fit()
+            pass
+            
+        return checkpoint.get('epoch', 0), checkpoint.get('val_f1', 0.0)

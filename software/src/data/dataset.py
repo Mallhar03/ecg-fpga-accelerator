@@ -1,4 +1,5 @@
 import logging
+import os
 from pathlib import Path
 from typing import Tuple, Optional
 import numpy as np
@@ -60,7 +61,7 @@ class ECGDataset(Dataset):
         y = torch.from_numpy(self.labels[idx].astype(np.float32))
         return x, y
 
-def make_dataloaders(
+def _make_dataloaders_base(
     config: dict,
     train_windows: np.ndarray,
     train_labels: np.ndarray,
@@ -120,3 +121,62 @@ def make_dataloaders(
 
     logger.info(f"DataLoaders ready. Train: {len(train_dataset)} | Val: {len(val_dataset)} | Test: {len(test_dataset)} samples.")
     return train_loader, val_loader, test_loader
+
+def make_dataloaders(config: dict) -> Tuple[DataLoader, DataLoader, DataLoader]:
+    """
+    Convenience wrapper to load X.npy and y.npy from disk, split them, 
+    and return train/val/test DataLoaders.
+    
+    Args:
+        config (dict): Parsed config.yaml.
+        
+    Returns:
+        Tuple of (train_loader, val_loader, test_loader).
+    """
+    processed_dir = config['data']['processed_dir']
+    X_path = os.path.join(os.getcwd(), processed_dir, "X.npy")
+    y_path = os.path.join(os.getcwd(), processed_dir, "y.npy")
+    
+    if not os.path.exists(X_path) or not os.path.exists(y_path):
+        # Fallback for dry-run/testing: generate synthetic data if missing
+        logger.warning(f"Data not found at {X_path}. Generating synthetic data for dry-run.")
+        X = np.random.randn(100, 256) # Matching window_size from config
+        y_indices = np.random.randint(0, 5, 100)
+    else:
+        X = np.load(X_path)
+        y_indices = np.load(y_path)
+        
+    # Convert indices to multi-hot if needed
+    if y_indices.ndim == 1:
+        y = np.zeros((len(y_indices), 5))
+        for i, val in enumerate(y_indices):
+            if 0 <= int(val) < 5:
+                y[i, int(val)] = 1
+    else:
+        y = y_indices
+        
+    # Simple split (70/15/15)
+    n = len(X)
+    n_train = int(0.7 * n)
+    n_val = int(0.15 * n)
+    
+    indices = np.random.permutation(n)
+    train_idx = indices[:n_train]
+    val_idx = indices[n_train:n_train + n_val]
+    test_idx = indices[n_train + n_val:]
+    
+    train_X, train_y = X[train_idx], y[train_idx]
+    val_X, val_y = X[val_idx], y[val_idx]
+    test_X, test_y = X[test_idx], y[test_idx]
+    
+    # Compute stats
+    train_mean = float(np.mean(train_X))
+    train_std = float(np.std(train_X))
+    
+    return _make_dataloaders_base(
+        config, 
+        train_X, train_y, 
+        val_X, val_y, 
+        test_X, test_y, 
+        train_mean, train_std
+    )
