@@ -2,45 +2,74 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-class MultiScaleLayer(nn.Module):
-    def __init__(self, in_channels, out_channels, kernel_sizes=[3, 5, 7, 9]):
-        super(MultiScaleLayer, self).__init__()
-        self.convs = nn.ModuleList([
-            nn.Conv1d(in_channels, out_channels // len(kernel_sizes), kernel_size=k, padding=k // 2)
-            for k in kernel_sizes
-        ])
-        self.bn = nn.BatchNorm1d(out_channels)
+import logging
 
-    def forward(self, x):
-        features = [conv(x) for conv in self.convs]
-        x = torch.cat(features, dim=1)
-        x = F.relu(self.bn(x))
-        return x
+logger = logging.getLogger("ecg_fpga.models.multiscale_cnn")
 
 class MultiScale1DCNN(nn.Module):
     """
     Multi-Scale 1D-CNN for ECG Arrhythmia Detection.
     Optimized for FPGA acceleration.
+
+    Architecture strictly matches hardware spec and Phase 2 QAT layout:
+    - Three parallel branches, kernel sizes from config: [3, 5, 7]
+    - Each branch: Conv1d → BatchNorm1d → ReLU → AdaptiveAvgPool1d(64)
+    - Concat → Flatten → Linear(96*64, 128) → ReLU → Dropout → Linear(128, 5)
+    - Output: raw logits shape (batch, 5)
     """
-    def __init__(self, in_channels=1, num_classes=5, base_filters=16):
+    def __init__(self, config):
         super(MultiScale1DCNN, self).__init__()
         
-        self.layer1 = MultiScaleLayer(in_channels, base_filters)
-        self.pool1 = nn.MaxPool1d(kernel_size=2)
+        in_channels = config['data'].get('in_channels', 1)
+        num_classes = config['model']['num_classes']
+        branch_out_channels = config['model']['branch_out_channels'] # 32
+        kernel_sizes = config['model']['kernel_sizes'] # [3, 5, 7]
+        pool_output_size = config['model']['pool_output_size'] # 64
+        fc_hidden_size = config['model']['fc_hidden_size'] # 128
+        dropout_rate = config['model']['dropout_rate'] # 0.3
         
-        self.layer2 = MultiScaleLayer(base_filters, base_filters * 2)
-        self.pool2 = nn.MaxPool1d(kernel_size=2)
+        # Parallel Branches
+        self.branches = nn.ModuleList([
+            nn.Sequential(
+                nn.Conv1d(
+                    in_channels, 
+                    branch_out_channels, 
+                    kernel_size=k, 
+                    padding=k // 2
+                ),
+                nn.BatchNorm1d(branch_out_channels),
+                nn.ReLU(),
+                nn.AdaptiveAvgPool1d(pool_output_size)
+            ) for k in kernel_sizes
+        ])
         
-        self.layer3 = MultiScaleLayer(base_filters * 2, base_filters * 4)
-        self.pool3 = nn.AdaptiveAvgPool1d(1)
+        # Calculate flattened size
+        flat_size = branch_out_channels * len(kernel_sizes) * pool_output_size
         
-        self.fc = nn.Linear(base_filters * 4, num_classes)
+        # Concat -> Flatten -> FC1
+        self.fc1 = nn.Linear(flat_size, fc_hidden_size)
+        self.relu = nn.ReLU()
+        self.dropout = nn.Dropout(dropout_rate)
+        
+        # Output layer
+        self.fc2 = nn.Linear(fc_hidden_size, num_classes)
+
+        total_params = sum(p.numel() for p in self.parameters())
+        logger.info(f"MultiScale1DCNN initialized with {total_params} parameters.")
 
     def forward(self, x):
         # x shape: [batch, 1, seq_len]
-        x = self.pool1(self.layer1(x))
-        x = self.pool2(self.layer2(x))
-        x = self.pool3(self.layer3(x))
+        branch_outs = [branch(x) for branch in self.branches]
+        
+        # Concatenate along channel dimension
+        x = torch.cat(branch_outs, dim=1) 
+        
+        # Flatten
         x = torch.flatten(x, 1)
-        x = self.fc(x)
+        
+        # Fully connected layers
+        x = self.relu(self.fc1(x))
+        x = self.dropout(x)
+        x = self.fc2(x)
+        
         return x

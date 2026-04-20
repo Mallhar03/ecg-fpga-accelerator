@@ -53,11 +53,7 @@ def main():
         train_loader, val_loader, _ = make_dataloaders(config)
 
         # Model
-        model = MultiScale1DCNN(
-            in_channels=1, 
-            num_classes=config['model']['num_classes'],
-            base_filters=config['model']['branch_out_channels']
-        ).to(device)
+        model = MultiScale1DCNN(config).to(device)
 
         # Loss
         loss_fn = MorphologyWeightedBCELoss(config['model']['class_weights'], device=device)

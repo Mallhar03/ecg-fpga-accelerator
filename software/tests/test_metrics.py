@@ -48,7 +48,7 @@ def test_metrics_invalid_shape_raises():
     y_true = np.random.randint(0, 2, (100, 3))
     y_pred = np.random.rand(100, 3)
     
-    with pytest.raises(ValueError, match="Expected shape \(N, 5\)"):
+    with pytest.raises(ValueError, match=r"Expected shape \(N, 5\)"):
         compute_clinical_metrics(y_true, y_pred)
     
     # Mismatched shapes

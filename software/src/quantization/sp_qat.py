@@ -53,9 +53,8 @@ class SPQATPipeline:
         matched_keys = []
         skipped_keys = []
         
-        # We attempt to load weights with strict=False as requested.
-        # Note: Since the architecture changed for Phase 2, many keys may be skipped.
-        quant_model.load_state_dict(fp32_state_dict, strict=False)
+        # Geometrical architecture now strictly identical. Any mismatched layer is a critical error.
+        quant_model.load_state_dict(fp32_state_dict, strict=True)
         
         for k in fp32_state_dict.keys():
             if k in quant_state_dict:
@@ -65,7 +64,7 @@ class SPQATPipeline:
                 
         logger.info(f"Weight Transfer: Matched {len(matched_keys)} keys. Skipped {len(skipped_keys)} keys.")
         if len(skipped_keys) > 0:
-            logger.info("Some weights were not transferred due to architecture mismatch.")
+            logger.error("Some weights were skipped despite strict=True being expected to fail. Review keys.")
 
     def calibrate(self, quant_model, train_loader) -> None:
         """

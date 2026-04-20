@@ -43,11 +43,7 @@ def main():
         _, _, test_loader = make_dataloaders(config)
 
         # Model
-        model = MultiScale1DCNN(
-            in_channels=1,
-            num_classes=config['model']['num_classes'],
-            base_filters=config['model']['branch_out_channels']
-        ).to(device)
+        model = MultiScale1DCNN(config).to(device)
         checkpoint = torch.load(args.checkpoint, map_location=device)
         model.load_state_dict(checkpoint['model_state_dict'])
         model.eval()
