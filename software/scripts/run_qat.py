@@ -11,7 +11,7 @@ sys.path.insert(0, os.path.abspath(os.path.dirname(os.path.dirname(__file__))))
 from src.data.dataset import make_dataloaders
 from src.models.quantized_cnn import QuantizedMultiScale1DCNN
 from src.quantization.sp_qat import SPQATPipeline
-from src.quantization.export import export_weights_to_mem
+from src.quantization.export import export_weights_to_mem, export_weights_to_c_header
 
 def setup_logging():
     os.makedirs("software/outputs/logs", exist_ok=True)
@@ -53,11 +53,12 @@ def main():
         # This executes: load_fp32_weights -> calibrate -> train_qat -> evaluate_and_validate
         quant_model = pipeline.run(train_loader, val_loader, test_loader)
         
-        # 5. Export to .mem
-        logger.info("Exporting verified quantized weights to .mem files...")
+        # 5. Export to .mem and C++ header weights.h
+        logger.info("Exporting verified quantized weights to .mem files and C++ weights.h header...")
         export_dir = config['export']['output_dir']
         export_weights_to_mem(quant_model, export_dir)
-        logger.info(f".mem files and weights_manifest.json written to {export_dir}")
+        header_path = export_weights_to_c_header(quant_model, export_dir)
+        logger.info(f".mem files, weights_manifest.json, and {os.path.basename(header_path)} written to {export_dir}")
         
         logger.info("Phase 2 QAT Pipeline completed successfully.")
         

@@ -53,6 +53,14 @@ Cardiac arrhythmias are among the leading causes of sudden cardiac death. Real-t
 
 ---
 
+## Current Hardware Target
+
+> **Active Migration Notice:** The project has migrated its hardware deployment target from FPGA (Verilog/Vivado) to the **Arduino Giga R1 WiFi** (STM32H747XI dual-core ARM Cortex-M7 @ 480 MHz / Cortex-M4 @ 240 MHz).
+> - Active firmware, 16-bit ADC sampling @ 360 Hz, diagnostic serial streaming, and C++ inference stubs reside in [`hardware_giga/`](file:///home/mallhar/Downloads/rns-major-project/ecg-fpga-accelerator/hardware_giga/).
+> - The original FPGA RTL source code, constraints, testbenches, and Vivado project files have been archived for reference in [`hardware_fpga_archive/`](file:///home/mallhar/Downloads/rns-major-project/ecg-fpga-accelerator/hardware_fpga_archive/).
+
+---
+
 ## Repository Structure
 
 ```
@@ -80,10 +88,10 @@ ecg-fpga-accelerator/
 │   │   │   └── trainer.py           # Training loop, checkpointing, early stopping
 │   │   └── quantization/
 │   │       ├── sp_qat.py            # Sensitivity-Preserving QAT pipeline
-│   │       └── export.py            # INT8 weight extraction to .mem files
+│   │       └── export.py            # INT8 weight extraction to .mem & weights.h C++ files
 │   ├── outputs/
 │   │   ├── checkpoints/             # Model checkpoints (.pth) — git-ignored
-│   │   ├── mem_files/               # Hardware handoff files (.mem + manifest) — git-ignored
+│   │   ├── mem_files/               # Hardware handoff files (.mem + weights.h + manifest) — git-ignored
 │   │   ├── logs/                    # Training/QAT logs — git-ignored
 │   │   └── plots/                   # test_metrics.json, training curves
 │   ├── data/
@@ -91,7 +99,12 @@ ecg-fpga-accelerator/
 │   │   └── processed/               # X.npy, y.npy after preprocessing — git-ignored
 │   ├── tests/                       # pytest test suite
 │   └── requirements.txt
-├── hardware/
+├── hardware_giga/                   # Active Arduino Giga R1 firmware & diagnostics
+│   ├── README.md                    # Giga hardware documentation
+│   ├── firmware/                    # .ino sketch, adc_acquisition, diagnostics, inference stub
+│   └── tests/golden_vectors/        # C++ vs Python output comparison test vectors
+├── hardware_fpga_archive/           # Legacy FPGA implementation archive (Verilog, XDC, Vivado)
+│   ├── README.md                    # Archive reference notice
 │   ├── rtl/                         # Verilog/SystemVerilog RTL source files
 │   ├── tb/                          # Simulation testbenches
 │   ├── constraints/                 # Vivado XDC pin/timing constraints
